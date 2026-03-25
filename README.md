@@ -30,35 +30,7 @@ FinPulse is a production-grade **n8n automation workflow** that:
 - 📉 **Delivers an end-of-day summary** at 5 PM with top and bottom performers
 - 🚨 **Handles errors gracefully** with a dedicated error-catching workflow that alerts via Slack
 
----
 
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    FinPulse Workflow                             │
-│                                                                  │
-│  [Schedule Trigger: 9AM/1PM/5PM ET, Mon–Fri]                   │
-│           │                                                      │
-│           ▼                                                      │
-│  [Fetch Stock Quotes] ──── Financial Modeling Prep REST API     │
-│           │                                                      │
-│           ▼                                                      │
-│  [Enrich & Classify Signals] ── JS: signal logic, vol analysis  │
-│           │                                                      │
-│     ┌─────┴──────────────────┬──────────────────┐              │
-│     ▼                        ▼                  ▼              │
-│  [IF: Alert Required?]  [Prepare Rows]  [Daily Summary @ 5PM]  │
-│     │ (TRUE)                 │                  │              │
-│     ▼                        ▼                  ▼              │
-│  [Build Slack Payload]  [Google Sheets]  [Slack Webhook]       │
-│     │                                                           │
-│     ▼                                                           │
-│  [Send Slack Alert]                                             │
-│                                                                  │
-│  [Error Trigger] ──► [Slack Error Alert]                        │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ### Step-by-Step Workflow
 
