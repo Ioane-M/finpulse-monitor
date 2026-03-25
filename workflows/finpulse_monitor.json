@@ -1,0 +1,200 @@
+{
+  "name": "FinPulse – Financial Portfolio Monitor & Alert System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 9,13,17 * * 1-5" }
+          ]
+        }
+      },
+      "id": "n1",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "notes": "Fires at 9AM, 1PM, 5PM ET on weekdays"
+    },
+    {
+      "parameters": {
+        "url": "=https://financialmodelingprep.com/api/v3/quote/{{ $env.WATCHLIST_SYMBOLS }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.FMP_API_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "n2",
+      "name": "Fetch Stock Quotes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "notes": "Financial Modeling Prep API – free tier 250 req/day"
+    },
+    {
+      "parameters": {
+        "jsCode": "const quotes = $input.first().json;\nconst THRESHOLD = parseFloat($env.ALERT_THRESHOLD_PCT ?? '3');\n\nconst enriched = quotes.map(stock => {\n  const changePct = stock.changesPercentage ?? 0;\n  const vol = stock.volume ?? 0;\n  const avgVol = stock.avgVolume ?? 1;\n  const volRatio = parseFloat((vol / avgVol).toFixed(2));\n\n  let signal = 'NEUTRAL';\n  if (changePct >= THRESHOLD) signal = 'STRONG_BULLISH';\n  else if (changePct >= 1.5) signal = 'BULLISH';\n  else if (changePct <= -THRESHOLD) signal = 'STRONG_BEARISH';\n  else if (changePct <= -1.5) signal = 'BEARISH';\n\n  return {\n    symbol: stock.symbol,\n    name: stock.name,\n    price: stock.price,\n    change: stock.change,\n    changePct: parseFloat(changePct.toFixed(2)),\n    volume: vol,\n    avgVolume: avgVol,\n    volRatio,\n    marketCap: stock.marketCap,\n    signal,\n    volumeAlert: volRatio > 1.8,\n    needsAlert: signal.includes('STRONG') || volRatio > 1.8,\n    timestamp: new Date().toISOString(),\n    emoji: signal.includes('BULL') ? '🟢' : signal.includes('BEAR') ? '🔴' : '🟡'\n  };\n});\n\nreturn enriched.map(item => ({ json: item }));"
+      },
+      "id": "n3",
+      "name": "Enrich and Classify Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needsAlert }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "n4",
+      "name": "Alert Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst alertLines = items.map(i => {\n  const d = i.json;\n  const volNote = d.volumeAlert ? ` | 📊 Vol spike x${d.volRatio}` : '';\n  return `${d.emoji} *${d.symbol}* (${d.name})\\n   Price: $${d.price}  |  Change: ${d.changePct > 0 ? '+' : ''}${d.changePct}%${volNote}\\n   Signal: \\`${d.signal}\\``;\n}).join('\\n\\n');\n\nconst ts = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' });\n\nreturn [{\n  json: {\n    slackBlocks: [\n      { type: 'header', text: { type: 'plain_text', text: '📈 FinPulse Market Alert', emoji: true } },\n      { type: 'section', text: { type: 'mrkdwn', text: `*Scan time:* ${ts} ET  |  *Alerts:* ${items.length}` } },\n      { type: 'divider' },\n      { type: 'section', text: { type: 'mrkdwn', text: alertLines } },\n      { type: 'context', elements: [{ type: 'mrkdwn', text: '_FinPulse Automation | Source: Financial Modeling Prep_' }] }\n    ],\n    alertCount: items.length\n  }\n}];"
+      },
+      "id": "n5",
+      "name": "Build Slack Alert Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ blocks: $json.slackBlocks }) }}"
+      },
+      "id": "n6",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(i => {\n  const d = i.json;\n  return {\n    json: {\n      Timestamp: d.timestamp,\n      Symbol: d.symbol,\n      Name: d.name,\n      Price: d.price,\n      Change: d.change,\n      'Change %': d.changePct,\n      Volume: d.volume,\n      'Vol Ratio': d.volRatio,\n      'Market Cap': d.marketCap,\n      Signal: d.signal,\n      'Vol Alert': d.volumeAlert ? 'YES' : 'NO'\n    }\n  };\n});"
+      },
+      "id": "n7",
+      "name": "Prepare Sheet Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "value": "={{ $env.GOOGLE_SHEET_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "PriceLog", "mode": "name" },
+        "columns": { "mappingMode": "autoMapInputData", "value": {}, "matchingColumns": [], "schema": [] },
+        "options": { "valueInputMode": "USER_ENTERED" }
+      },
+      "id": "n8",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1320, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const hour = new Date().getHours();\nif (hour !== 17) return [];\n\nconst items = $input.all();\nconst sorted = [...items].sort((a, b) => b.json.changePct - a.json.changePct);\nconst top3 = sorted.slice(0, 3);\nconst bot3 = sorted.slice(-3).reverse();\n\nconst fmt = d => `${d.emoji} *${d.symbol}*: ${d.changePct > 0 ? '+' : ''}${d.changePct}%  ($${d.price})`;\n\nconst text = [\n  '📊 *FinPulse – End-of-Day Summary*',\n  '',\n  '*🏆 Top Performers*',\n  ...top3.map(i => fmt(i.json)),\n  '',\n  '*📉 Bottom Performers*',\n  ...bot3.map(i => fmt(i.json)),\n  '',\n  `_${new Date().toDateString()} | ${items.length} symbols tracked_`\n].join('\\n');\n\nreturn [{ json: { summaryText: text } }];"
+      },
+      "id": "n9",
+      "name": "Build Daily Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 580]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ text: $json.summaryText }) }}"
+      },
+      "id": "n10",
+      "name": "Send Daily Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 580]
+    },
+    {
+      "parameters": {},
+      "id": "n11",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [220, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ text: '🚨 *FinPulse Error*\\n```' + $json.message + '```\\nWorkflow: `' + $json.workflow.name + '`\\nNode: `' + $json.execution.lastNodeExecuted + '`' }) }}"
+      },
+      "id": "n12",
+      "name": "Alert on Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 560]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Fetch Stock Quotes", "type": "main", "index": 0 }]]
+    },
+    "Fetch Stock Quotes": {
+      "main": [[{ "node": "Enrich and Classify Signals", "type": "main", "index": 0 }]]
+    },
+    "Enrich and Classify Signals": {
+      "main": [
+        [{ "node": "Alert Required", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Sheet Rows", "type": "main", "index": 0 }],
+        [{ "node": "Build Daily Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Required": {
+      "main": [
+        [{ "node": "Build Slack Alert Payload", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Build Slack Alert Payload": {
+      "main": [[{ "node": "Send Slack Alert", "type": "main", "index": 0 }]]
+    },
+    "Prepare Sheet Rows": {
+      "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]]
+    },
+    "Build Daily Summary": {
+      "main": [[{ "node": "Send Daily Summary", "type": "main", "index": 0 }]]
+    },
+    "Error Trigger": {
+      "main": [[{ "node": "Alert on Error", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": ["finance", "automation", "portfolio", "alerts"]
+}
